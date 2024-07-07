@@ -1,8 +1,7 @@
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.table import EnvironmentSettings, StreamTableEnvironment
-
-# 05_kafka_flinksql_tumbling_window.py
-# =====================================
+from pyflink.table.expressions import col, lit
+from pyflink.table.window import Tumble
 
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
@@ -10,17 +9,8 @@ def main():
     tenv = StreamTableEnvironment.create(env, settings)
 
     env.add_jars("file:///D:\\Projects\GitHub\\Kafka_PyFlink_Getting_Started\\flink-sql-connector-kafka-3.2.0-1.19.jar")
-
-    # Dynamic tables are the core concept of Flink’s Table API and SQL support for streaming data.
-    # In contrast to the static tables that represent batch data, dynamic tables change over time.
-    # But just like static batch tables, systems can execute queries over dynamic tables.
-    # Querying dynamic tables yields a Continuous Query.
-    # A continuous query never terminates and produces dynamic results — another dynamic table.
-    # The query continuously updates its (dynamic) result table to reflect changes on its (dynamic) input tables.
-    # Essentially, a continuous query on a dynamic table is very similar to a query that defines a materialized view.
-
     src_ddl = """
-        CREATE TABLE sensor_readings (
+            CREATE TABLE sensor_readings (            	
             device_id VARCHAR,
             co DOUBLE,
             humidity DOUBLE,
@@ -39,25 +29,22 @@ def main():
             'format' = 'json'
         )
     """
+
     tenv.execute_sql(src_ddl)
     sensor_readings_tab = tenv.from_path('sensor_readings')
 
-    # Process a Tumbling Window Aggregate Calculation of Ampere-Hour
-    # For every 30 seconds non-overlapping window
-    # Calculate the total charge consumed grouped by device
-    tumbling_w_sql = """
-            SELECT
-                device_id,
-                TUMBLE_START(proctime, INTERVAL '30' SECONDS) AS window_start,
-                TUMBLE_END(proctime, INTERVAL '30' SECONDS) AS window_end,
-                SUM(ampere_hour) AS charge_consumed
-            FROM sensor_readings
-            GROUP BY
-                TUMBLE(proctime, INTERVAL '30' SECONDS),
-                device_id
-        """
+    # Define a Tumbling Window Aggregate Calculation of ampere-hour sensor readings
+    # - For every 30 seconds non-overlapping window
+    # - Sum of charge consumed by each device
+    tumbling_w = sensor_readings_tab.window(Tumble.over(lit(30).seconds)
+                                            .on(sensor_readings_tab.proctime)
+                                            .alias('w')) \
+                .group_by(col('w'), sensor_readings_tab.device_id) \
+                .select(sensor_readings_tab.device_id,
+                    col('w').start.alias('window_start'),
+                    col('w').end.alias('window_end'),
+                    sensor_readings_tab.ampere_hour.sum.alias('charge_consumed'))
 
-    tumbling_w = tenv.sql_query(tumbling_w_sql)
 
     sink_ddl = """
             CREATE TABLE devicecharge (
