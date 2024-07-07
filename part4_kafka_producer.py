@@ -1,7 +1,7 @@
 
 import random
 import time
-from part3_kafka_config import config
+from part4_kafka_config import config
 from confluent_kafka import Producer
 import json
 
