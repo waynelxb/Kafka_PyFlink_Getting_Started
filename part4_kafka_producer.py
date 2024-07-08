@@ -1,70 +1,55 @@
-from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.table import EnvironmentSettings, StreamTableEnvironment
-from pyflink.table.expressions import col, lit
-from pyflink.table.window import Tumble
 
-def main():
-    env = StreamExecutionEnvironment.get_execution_environment()
-    settings = EnvironmentSettings.in_streaming_mode()
-    tenv = StreamTableEnvironment.create(env, settings)
+import random
+import time
+from part4_kafka_config import config
+from confluent_kafka import Producer
+import json
 
-    env.add_jars("file:///D:\\testing_space\\PycharmProjects\\kafka-flink-getting-started\\flink-sql-connector-kafka-3.1.0-1.18.jar")
+def sensor_event():
 
-    src_ddl = """
-            CREATE TABLE sensor_readings (
-                device_id VARCHAR,
-                co DOUBLE,
-                humidity DOUBLE,
-                motion BOOLEAN,
-                temp DOUBLE,
-                ampere_hour DOUBLE,
-                ts BIGINT,
-                proctime AS PROCTIME()
-            ) WITH (
-                'connector' = 'kafka',
-                'topic' = 'sensor.readings',
-                'properties.bootstrap.servers' = 'localhost:9092',
-                'properties.group.id' = 'device.tumbling.w.sql',
-                'scan.startup.mode' = 'earliest-offset',
-                'properties.auto.offset.reset' = 'earliest',
-                'format' = 'json'
-            )
-        """
+    DEVICES = ['b8:27:eb:bf:9d:51', '00:0f:00:70:91:0a', '1c:bf:ce:15:ec:4d']
+    device_id = random.choice(DEVICES)
+    co = round(random.uniform(0.0011, 0.0072), 4)
+    humidity = round(random.uniform(45.00, 78.00), 2)
+    motion = random.choice([True, False])
+    temp = round(random.uniform(17.00, 36.00), 2)
+    amp_hr = round(random.uniform(0.10, 1.80), 2)
+    event_ts = int(time.time() * 1000)
 
-    tenv.execute_sql(src_ddl)
-    sensor_readings_tab = tenv.from_path('sensor_readings')
+    sensor_event = {
+        'device_id': device_id,
+        'co': co,
+        'humidity': humidity,
+        'motion': motion,
+        'temp': temp,
+        'ampere_hour': amp_hr,
+        'ts': event_ts
+    }
+    return sensor_event
 
-    # Define a Tumbling Window Aggregate Calculation of ampere-hour sensor readings
-    # - For every 30 seconds non-overlapping window
-    # - Sum of charge consumed by each device
-    tumbling_w = sensor_readings_tab.window(Tumble.over(lit(30).seconds)
-                                            .on(sensor_readings_tab.proctime)
-                                            .alias('w')) \
-                .group_by(col('w'), sensor_readings_tab.device_id) \
-                .select(sensor_readings_tab.device_id,
-                    col('w').start.alias('window_start'),
-                    col('w').end.alias('window_end'),
-                    sensor_readings_tab.ampere_hour.sum.alias('charge_consumed'))
+def delivery_report(err, event):
+    if err is not None:
+        print(f'Delivery failed on reading for {event.key().decode("utf8")}: {err}')
+    else:
+        print(f'Device reading for {event.key().decode("utf8")} produced to {event.topic()}')
 
 
-    sink_ddl = """
-                CREATE TABLE devicecharge (
-                    device_id VARCHAR,
-                    window_start TIMESTAMP(3),
-                    window_end TIMESTAMP(3),
-                    charge_consumed DOUBLE
-                ) WITH (
-                    'connector' = 'kafka',
-                    'topic' = 'device.charge',
-                    'properties.bootstrap.servers' = 'localhost:9092',
-                    'scan.startup.mode' = 'earliest-offset',
-                    'properties.auto.offset.reset' = 'earliest',
-                    'format' = 'json'
-                )
-            """
-
-    tenv.execute_sql(sink_ddl)
-    tumbling_w.execute_insert('devicecharge').wait()
 
 if __name__ == '__main__':
-    main()
+    topic = 'sensor.readings'
+    device_data = sensor_event()
+    producer = Producer(config)
+
+    try:
+        while True:
+            device_data = sensor_event()
+            print(json.dumps(device_data))
+            producer.produce(topic=topic, key=device_data['device_id'],
+                             value=json.dumps(device_data),
+                             on_delivery=delivery_report)
+            time.sleep(5)
+    except Exception as e:
+        print(e)
+    finally:
+        producer.flush()
+
